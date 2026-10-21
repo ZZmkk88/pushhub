@@ -49,6 +49,10 @@ def hash_password(password: str, salt_hex: str) -> str:
     ).hex()
 
 
+# 与 users.salt（secrets.token_hex(16)）等长。用户不存在时用来做一次等代价 PBKDF2。
+_DUMMY_PASSWORD_SALT = "00" * 16
+
+
 def init_db() -> None:
     conn = get_db()
     try:
@@ -102,6 +106,7 @@ def init_db() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    broadcaster.bind_loop(asyncio.get_running_loop())
     yield
 
 
@@ -154,6 +159,10 @@ class Broadcaster:
 
     def __init__(self) -> None:
         self._queues: set[asyncio.Queue] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
 
     def subscribe(self) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
@@ -163,13 +172,22 @@ class Broadcaster:
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self._queues.discard(queue)
 
-    def publish(self, payload: dict) -> None:
+    def _enqueue(self, payload: dict) -> None:
         for queue in list(self._queues):
             try:
                 queue.put_nowait(payload)
             except asyncio.QueueFull:
                 # 慢消费者队列满了就丢这一条，不阻塞发消息接口
                 pass
+
+    def publish(self, payload: dict) -> None:
+        # post_message 是同步端点，会在线程池里跑。Queue 只能在事件循环线程入队。
+        snapshot = dict(payload)
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._enqueue, snapshot)
+            return
+        self._enqueue(snapshot)
 
     @property
     def subscriber_count(self) -> int:
@@ -282,7 +300,7 @@ def new_app_token(conn: sqlite3.Connection) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "app": "pushhub", "subscribers": broadcaster.subscriber_count}
+    return {"status": "ok", "app": "pushhub"}
 
 
 @app.post("/api/login")
@@ -292,7 +310,10 @@ def login(body: LoginIn) -> dict:
         row = conn.execute(
             "SELECT * FROM users WHERE username = ?", (body.username.strip(),)
         ).fetchone()
-        if row is None or row["password_hash"] != hash_password(body.password, row["salt"]):
+        if row is None:
+            hash_password(body.password, _DUMMY_PASSWORD_SALT)
+            raise HTTPException(status_code=401, detail="用户名或密码不正确")
+        if row["password_hash"] != hash_password(body.password, row["salt"]):
             raise HTTPException(status_code=401, detail="用户名或密码不正确")
         token = secrets.token_urlsafe(32)
         conn.execute(
@@ -513,13 +534,14 @@ def list_messages(
             rows = conn.execute(
                 "SELECT m.*, a.name AS app_name FROM messages m"
                 " JOIN apps a ON a.id = m.app_id WHERE m.app_id = ?"
-                " ORDER BY m.id DESC LIMIT ?",
+                " ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
                 (app_id, limit),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT m.*, a.name AS app_name FROM messages m"
-                " JOIN apps a ON a.id = m.app_id ORDER BY m.id DESC LIMIT ?",
+                " JOIN apps a ON a.id = m.app_id"
+                " ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [message_out(r) for r in rows]
