@@ -84,10 +84,8 @@ def init_db() -> None:
             );
             """
         )
-        row = conn.execute(
-            "SELECT id FROM users WHERE username = ?", (INITIAL_USERNAME,)
-        ).fetchone()
-        if row is None:
+        count = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
+        if count["n"] == 0:
             salt = secrets.token_hex(16)
             conn.execute(
                 "INSERT INTO users (username, password_hash, salt, must_change_password)"
@@ -105,7 +103,38 @@ async def lifespan(app: FastAPI):
     yield
 
 
+class SecurityHeadersMiddleware:
+    """补点击劫持防护头。只改 ASGI 起始消息，不读取响应体，避免打断 SSE。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {name.lower() for name, _ in headers}
+                extra = (
+                    (b"x-frame-options", b"DENY"),
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"referrer-policy", b"no-referrer"),
+                    (b"content-security-policy", b"frame-ancestors 'none'"),
+                )
+                for name, value in extra:
+                    if name not in existing:
+                        headers.append((name, value))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
 app = FastAPI(title="pushhub", lifespan=lifespan)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ---------- SSE 订阅者管理（进程内广播） ----------
@@ -161,7 +190,7 @@ def current_user(authorization: str | None = Header(default=None)) -> sqlite3.Ro
 
 
 def user_by_token(token: str | None) -> sqlite3.Row | None:
-    """给 SSE 端点用：EventSource/流式 fetch 可能走查询参数传 token。"""
+    """按登录会话令牌查用户。只接受调用方从 Authorization 头取出的值。"""
     if not token:
         return None
     conn = get_db()
@@ -310,19 +339,29 @@ def me(user: sqlite3.Row = Depends(current_user)) -> dict:
 
 @app.post("/api/change-password")
 def change_password(
-    body: ChangePasswordIn, user: sqlite3.Row = Depends(current_user)
+    body: ChangePasswordIn,
+    authorization: str | None = Header(default=None),
+    user: sqlite3.Row = Depends(current_user),
 ) -> dict:
     if user["password_hash"] != hash_password(body.current_password, user["salt"]):
         raise HTTPException(status_code=400, detail="当前密码不正确")
     if len(body.new_password) < 6:
         raise HTTPException(status_code=400, detail="新密码至少 6 位")
     salt = secrets.token_hex(16)
+    keep = ""
+    if authorization and authorization.startswith("Bearer "):
+        keep = authorization.removeprefix("Bearer ").strip()
     conn = get_db()
     try:
         conn.execute(
             "UPDATE users SET password_hash = ?, salt = ?, must_change_password = 0"
             " WHERE id = ?",
             (hash_password(body.new_password, salt), salt, user["id"]),
+        )
+        # 改密只留这一次请求的会话，其余登录态立刻作废。
+        conn.execute(
+            "DELETE FROM sessions WHERE user_id = ? AND token != ?",
+            (user["id"], keep),
         )
         conn.commit()
     finally:
@@ -527,10 +566,10 @@ def clear_messages(
 # ---------- SSE 实时推送 ----------
 
 @app.get("/api/stream")
-async def stream(request: Request, token: str | None = Query(default=None)):
+async def stream(request: Request):
     auth = request.headers.get("authorization", "")
     session_token = (
-        auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else token
+        auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
     )
     if user_by_token(session_token) is None:
         raise HTTPException(status_code=401, detail="未登录")
@@ -572,4 +611,8 @@ def index() -> FileResponse:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PH_PORT", "8000")))
+    uvicorn.run(
+        app,
+        host=os.environ.get("PH_HOST", "127.0.0.1"),
+        port=int(os.environ.get("PH_PORT", "8000")),
+    )
