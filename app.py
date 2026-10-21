@@ -160,6 +160,21 @@ def current_user(authorization: str | None = Header(default=None)) -> sqlite3.Ro
     return row
 
 
+def session_alive(token: str) -> bool:
+    """SSE 长连接在推送每条消息前再确认会话仍在且未过期。"""
+    if not token:
+        return False
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sessions WHERE token = ? AND expires_at > ?",
+            (token, time.time()),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def app_by_token(token: str | None) -> sqlite3.Row:
     if not token:
         raise HTTPException(status_code=401, detail="缺少应用令牌（请求头 X-App-Token）")
@@ -526,10 +541,18 @@ def clear_messages(
 # ---------- SSE 实时推送 ----------
 
 @app.get("/api/stream")
-async def stream(request: Request, user: sqlite3.Row = Depends(current_user)):
+async def stream(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    user: sqlite3.Row = Depends(current_user),
+):
     # P1-2：会话令牌只从 Authorization: Bearer 请求头读取，
     # 不再接受 URL 查询参数里的令牌（即使有效也会返回 401）。
     # 前端用 fetch 流式读取并带头，不走查询参数，不受影响。
+    # 握手之后会话可能被登出、改密作废或过期，推送前再查一次。
+    token = ""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
 
     queue = broadcaster.subscribe()
 
@@ -537,15 +560,22 @@ async def stream(request: Request, user: sqlite3.Row = Depends(current_user)):
         try:
             yield "event: ready\ndata: {}\n\n"
             while True:
+                if not session_alive(token):
+                    break
                 try:
                     payload = await asyncio.wait_for(
                         queue.get(), timeout=SSE_KEEPALIVE_SECONDS
                     )
-                    yield "event: message\ndata: " + json.dumps(
-                        payload, ensure_ascii=False
-                    ) + "\n\n"
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
+                    if await request.is_disconnected():
+                        break
+                    continue
+                if not session_alive(token):
+                    break
+                yield "event: message\ndata: " + json.dumps(
+                    payload, ensure_ascii=False
+                ) + "\n\n"
                 if await request.is_disconnected():
                     break
         finally:
