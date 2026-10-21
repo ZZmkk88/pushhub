@@ -311,3 +311,36 @@ def test_change_password_flow(client):
                     json={"current_password": "newpass1", "new_password": "admin123"},
                     headers=auth(tok2))
     assert r.status_code == 200
+
+
+# ---------- P1-2 回归：SSE 会话令牌只认请求头 ----------
+
+def test_stream_query_token_rejected(client, token):
+    """P1-2：即使带的是有效登录令牌，走查询参数也要 401。"""
+    r = client.get("/api/stream", params={"token": token})
+    assert r.status_code == 401
+
+
+# ---------- P1-3 回归：改密作废其他会话 ----------
+
+def test_change_password_revokes_other_sessions(client):
+    """P1-3：改密后其他会话 401、当前会话保持有效。"""
+    t1 = login(client)
+    t2 = login(client)
+    assert t1 != t2
+    r = client.post(
+        "/api/change-password",
+        json={"current_password": "admin123", "new_password": "tmpnew99"},
+        headers=auth(t1),
+    )
+    assert r.status_code == 200
+    assert client.get("/api/me", headers=auth(t1)).status_code == 200
+    assert client.get("/api/me", headers=auth(t2)).status_code == 401
+    # 改回初始密码，用当前有效的会话
+    r = client.post(
+        "/api/change-password",
+        json={"current_password": "tmpnew99", "new_password": "admin123"},
+        headers=auth(t1),
+    )
+    assert r.status_code == 200
+    assert client.get("/api/me", headers=auth(t1)).status_code == 200

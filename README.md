@@ -43,8 +43,13 @@ python app.py
 ```
 
 启动后打开 http://127.0.0.1:8000 ，用默认账号登录即可。
-端口可用环境变量 `PH_PORT` 修改；数据库默认在 `data/pushhub.db`，
-可用 `PH_DB_PATH` 覆盖。
+
+| 环境变量 | 说明 | 默认值 |
+|---|---|---|
+| `PH_HOST` | 服务监听地址。默认只听本机；要对局域网开放时显式设为 `0.0.0.0` | `127.0.0.1` |
+| `PH_PORT` | 服务端口 | `8000` |
+| `PH_DB_PATH` | SQLite 数据库文件位置 | `data/pushhub.db` |
+| `PH_INITIAL_USERNAME` / `PH_INITIAL_PASSWORD` | 初始账号密码（只在账号不存在时写入） | `admin` / `admin123` |
 
 ## 发消息接口
 

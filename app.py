@@ -160,21 +160,6 @@ def current_user(authorization: str | None = Header(default=None)) -> sqlite3.Ro
     return row
 
 
-def user_by_token(token: str | None) -> sqlite3.Row | None:
-    """给 SSE 端点用：EventSource/流式 fetch 可能走查询参数传 token。"""
-    if not token:
-        return None
-    conn = get_db()
-    try:
-        return conn.execute(
-            "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id"
-            " WHERE s.token = ? AND s.expires_at > ?",
-            (token, time.time()),
-        ).fetchone()
-    finally:
-        conn.close()
-
-
 def app_by_token(token: str | None) -> sqlite3.Row:
     if not token:
         raise HTTPException(status_code=401, detail="缺少应用令牌（请求头 X-App-Token）")
@@ -310,12 +295,21 @@ def me(user: sqlite3.Row = Depends(current_user)) -> dict:
 
 @app.post("/api/change-password")
 def change_password(
-    body: ChangePasswordIn, user: sqlite3.Row = Depends(current_user)
+    body: ChangePasswordIn,
+    user: sqlite3.Row = Depends(current_user),
+    authorization: str | None = Header(default=None),
 ) -> dict:
     if user["password_hash"] != hash_password(body.current_password, user["salt"]):
         raise HTTPException(status_code=400, detail="当前密码不正确")
     if len(body.new_password) < 6:
         raise HTTPException(status_code=400, detail="新密码至少 6 位")
+    # P1-3：改密成功时作废同一用户的所有其他会话，只保留当前这一次登录。
+    # 取不到当前令牌时不删，避免把自己也踢掉。
+    current_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if authorization and authorization.startswith("Bearer ")
+        else None
+    )
     salt = secrets.token_hex(16)
     conn = get_db()
     try:
@@ -324,6 +318,11 @@ def change_password(
             " WHERE id = ?",
             (hash_password(body.new_password, salt), salt, user["id"]),
         )
+        if current_token:
+            conn.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND token != ?",
+                (user["id"], current_token),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -527,13 +526,10 @@ def clear_messages(
 # ---------- SSE 实时推送 ----------
 
 @app.get("/api/stream")
-async def stream(request: Request, token: str | None = Query(default=None)):
-    auth = request.headers.get("authorization", "")
-    session_token = (
-        auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else token
-    )
-    if user_by_token(session_token) is None:
-        raise HTTPException(status_code=401, detail="未登录")
+async def stream(request: Request, user: sqlite3.Row = Depends(current_user)):
+    # P1-2：会话令牌只从 Authorization: Bearer 请求头读取，
+    # 不再接受 URL 查询参数里的令牌（即使有效也会返回 401）。
+    # 前端用 fetch 流式读取并带头，不走查询参数，不受影响。
 
     queue = broadcaster.subscribe()
 
@@ -572,4 +568,9 @@ def index() -> FileResponse:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PH_PORT", "8000")))
+    # P1-1：默认只监听本机（127.0.0.1）。要对局域网开放时，显式设置 PH_HOST=0.0.0.0。
+    uvicorn.run(
+        app,
+        host=os.environ.get("PH_HOST", "127.0.0.1"),
+        port=int(os.environ.get("PH_PORT", "8000")),
+    )
