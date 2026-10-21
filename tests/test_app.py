@@ -344,3 +344,52 @@ def test_change_password_revokes_other_sessions(client):
     )
     assert r.status_code == 200
     assert client.get("/api/me", headers=auth(t1)).status_code == 200
+
+
+# ---------- P1-4 回归：初始用户只在 users 表为空时创建 ----------
+
+def test_init_db_seeds_only_when_empty(monkeypatch):
+    """P1-4：已有用户后，换 PH_INITIAL_USERNAME 再 init 不应插入新账号。"""
+    import sqlite3
+
+    import app as ph
+
+    fresh = str(Path(tempfile.mkdtemp()) / "seed.db")
+    monkeypatch.setattr(ph, "DB_PATH", fresh)
+    monkeypatch.setattr(ph, "INITIAL_USERNAME", "seededuser")
+    ph.init_db()
+    rows = sqlite3.connect(fresh).execute(
+        "SELECT username, must_change_password FROM users"
+    ).fetchall()
+    assert len(rows) == 1 and rows[0][0] == "seededuser" and rows[0][1] == 1
+
+    monkeypatch.setattr(ph, "INITIAL_USERNAME", "intruder")
+    ph.init_db()
+    names = [r[0] for r in sqlite3.connect(fresh).execute("SELECT username FROM users")]
+    assert names == ["seededuser"]
+
+
+# ---------- P1-5 回归：安全响应头，且 SSE 流不被打断 ----------
+
+def test_security_headers(client):
+    """P1-5：普通响应带齐 4 个安全头；SSE 用例本身走中间件证明流没被吃掉。"""
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers.get("x-frame-options") == "DENY"
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    assert r.headers.get("referrer-policy") == "no-referrer"
+    assert r.headers.get("content-security-policy") == "frame-ancestors 'none'"
+    r = client.get("/health")
+    assert r.headers.get("x-frame-options") == "DENY"
+    r = client.get("/api/apps")  # 未登录 401 也要带头
+    assert r.status_code == 401
+    assert r.headers.get("x-frame-options") == "DENY"
+
+
+# ---------- P2-2 回归：自动文档页关闭 ----------
+
+def test_docs_endpoints_disabled(client):
+    """P2-2：/docs、/redoc、/openapi.json 未登录不可见（直接关闭）。"""
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404

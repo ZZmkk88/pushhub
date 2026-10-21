@@ -49,7 +49,7 @@ python app.py
 | `PH_HOST` | 服务监听地址。默认只听本机；要对局域网开放时显式设为 `0.0.0.0` | `127.0.0.1` |
 | `PH_PORT` | 服务端口 | `8000` |
 | `PH_DB_PATH` | SQLite 数据库文件位置 | `data/pushhub.db` |
-| `PH_INITIAL_USERNAME` / `PH_INITIAL_PASSWORD` | 初始账号密码（只在账号不存在时写入） | `admin` / `admin123` |
+| `PH_INITIAL_USERNAME` / `PH_INITIAL_PASSWORD` | 初始账号密码（只在 users 表为空、即首次启动时写入；之后再改这两个变量也不会新增账号或改写密码） | `admin` / `admin123` |
 
 ## 发消息接口
 

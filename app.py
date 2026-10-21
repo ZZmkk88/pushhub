@@ -84,10 +84,10 @@ def init_db() -> None:
             );
             """
         )
-        row = conn.execute(
-            "SELECT id FROM users WHERE username = ?", (INITIAL_USERNAME,)
-        ).fetchone()
-        if row is None:
+        # P1-4：只有 users 表完全为空（首次启动）才创建初始用户。
+        # 已有用户后，哪怕换了 PH_INITIAL_USERNAME，也不会再插入一个全权限账号。
+        count = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
+        if count["n"] == 0:
             salt = secrets.token_hex(16)
             conn.execute(
                 "INSERT INTO users (username, password_hash, salt, must_change_password)"
@@ -105,7 +105,46 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="pushhub", lifespan=lifespan)
+class SecurityHeadersMiddleware:
+    """P1-5：补点击劫持防护头。只改 ASGI 起始消息里的响应头，
+    不读取、不缓冲响应体，所以 SSE 长连接不会被打断。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {name.lower() for name, _ in headers}
+                extra = (
+                    (b"x-frame-options", b"DENY"),
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"referrer-policy", b"no-referrer"),
+                    (b"content-security-policy", b"frame-ancestors 'none'"),
+                )
+                for name, value in extra:
+                    if name not in existing:
+                        headers.append((name, value))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+# P2-2：未登录可访问的自动文档页（/docs、/redoc、/openapi.json）直接关闭。
+app = FastAPI(
+    title="pushhub",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ---------- SSE 订阅者管理（进程内广播） ----------
