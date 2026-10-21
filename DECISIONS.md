@@ -60,6 +60,22 @@
   pushhub 直接 `docs_url=None, redoc_url=None, openapi_url=None` 关闭三入口。
 - 附带回归测试：`test_docs_endpoints_disabled`（三入口均为 404）。
 
+## D9：TASK-050 的 8 条 P2 全部采纳（2026-10-21）
+
+- P2-1：消息列表排序改为 `created_at DESC, id DESC`，README 口径同步为
+  "按创建时间倒序（同一秒内再按 id 倒序）"（之前只按 id，README 却写按时间）。
+- P2-2：README 与页面补上"列表默认返回最近 200 条，limit 取值 1–500"。
+- P2-3：README 默认库路径改为"相对 app.py 所在目录的 data/pushhub.db"。
+- P2-4：NOTES 令牌随机部分 27 字符 → 32 字符（实测 `token_urlsafe(24)`）。
+- P2-5：前端优先级输入框去掉 0–10 限制，与接口"整数、默认 5"一致。
+- P2-7：广播改到事件循环线程里 `call_soon_threadsafe` 入队——`post_message`
+  是同步端点（跑在线程池），直接 `put_nowait` 有线程风险；循环未绑定或已停时
+  退回直接入队。
+- P2-8：登录时用户名不存在也先跑一次等代价 PBKDF2（固定盐），错误文案不变，
+  堵住时序侧信道猜用户名。
+- P2-10：`/health` 不再返回订阅数（不鉴权接口少暴露内部状态）。
+- 不做：P2-6（/docs 三入口已在 D7 关闭）、P2-9（不删已能装的依赖）。
+
 ## D8：Grok 独立复现的 P1-1~P1-3 不重复合入（TASK-022 对账，2026-10-21）
 
 - `grok/TASK-022-pushhub` 分支基于旧 main（比当前 main 少我方 18:42 的

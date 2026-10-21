@@ -49,6 +49,10 @@ def hash_password(password: str, salt_hex: str) -> str:
     ).hex()
 
 
+# 与 users.salt（secrets.token_hex(16)）等长。用户不存在时用来做一次等代价 PBKDF2。
+_DUMMY_PASSWORD_SALT = "00" * 16
+
+
 def init_db() -> None:
     conn = get_db()
     try:
@@ -102,6 +106,7 @@ def init_db() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    broadcaster.bind_loop(asyncio.get_running_loop())
     yield
 
 
@@ -154,6 +159,10 @@ class Broadcaster:
 
     def __init__(self) -> None:
         self._queues: set[asyncio.Queue] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
 
     def subscribe(self) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
@@ -163,13 +172,22 @@ class Broadcaster:
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self._queues.discard(queue)
 
-    def publish(self, payload: dict) -> None:
+    def _enqueue(self, payload: dict) -> None:
         for queue in list(self._queues):
             try:
                 queue.put_nowait(payload)
             except asyncio.QueueFull:
                 # 慢消费者队列满了就丢这一条，不阻塞发消息接口
                 pass
+
+    def publish(self, payload: dict) -> None:
+        # post_message 是同步端点，会在线程池里跑。Queue 只能在事件循环线程入队。
+        snapshot = dict(payload)
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._enqueue, snapshot)
+            return
+        self._enqueue(snapshot)
 
     @property
     def subscriber_count(self) -> int:
@@ -197,6 +215,22 @@ def current_user(authorization: str | None = Header(default=None)) -> sqlite3.Ro
     if row is None:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     return row
+
+
+def session_alive(token: str) -> bool:
+    """SSE 长连接在推送每条消息前再确认会话仍在且未过期。
+    （TASK-037 P1-1：登出/改密作废/过期后，已打开的流不再收到新消息。）"""
+    if not token:
+        return False
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sessions WHERE token = ? AND expires_at > ?",
+            (token, time.time()),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def app_by_token(token: str | None) -> sqlite3.Row:
@@ -282,7 +316,7 @@ def new_app_token(conn: sqlite3.Connection) -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "app": "pushhub", "subscribers": broadcaster.subscriber_count}
+    return {"status": "ok", "app": "pushhub"}
 
 
 @app.post("/api/login")
@@ -292,7 +326,10 @@ def login(body: LoginIn) -> dict:
         row = conn.execute(
             "SELECT * FROM users WHERE username = ?", (body.username.strip(),)
         ).fetchone()
-        if row is None or row["password_hash"] != hash_password(body.password, row["salt"]):
+        if row is None:
+            hash_password(body.password, _DUMMY_PASSWORD_SALT)
+            raise HTTPException(status_code=401, detail="用户名或密码不正确")
+        if row["password_hash"] != hash_password(body.password, row["salt"]):
             raise HTTPException(status_code=401, detail="用户名或密码不正确")
         token = secrets.token_urlsafe(32)
         conn.execute(
@@ -513,13 +550,14 @@ def list_messages(
             rows = conn.execute(
                 "SELECT m.*, a.name AS app_name FROM messages m"
                 " JOIN apps a ON a.id = m.app_id WHERE m.app_id = ?"
-                " ORDER BY m.id DESC LIMIT ?",
+                " ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
                 (app_id, limit),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT m.*, a.name AS app_name FROM messages m"
-                " JOIN apps a ON a.id = m.app_id ORDER BY m.id DESC LIMIT ?",
+                " JOIN apps a ON a.id = m.app_id"
+                " ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [message_out(r) for r in rows]
@@ -565,10 +603,21 @@ def clear_messages(
 # ---------- SSE 实时推送 ----------
 
 @app.get("/api/stream")
-async def stream(request: Request, user: sqlite3.Row = Depends(current_user)):
+async def stream(
+    request: Request,
+    user: sqlite3.Row = Depends(current_user),
+    authorization: str | None = Header(default=None),
+):
     # P1-2：会话令牌只从 Authorization: Bearer 请求头读取，
     # 不再接受 URL 查询参数里的令牌（即使有效也会返回 401）。
     # 前端用 fetch 流式读取并带头，不走查询参数，不受影响。
+    # TASK-037 P1-1：握手只查一次不够，会话可能在流打开后被登出/改密作废/过期，
+    # 所以下面每轮推送前再查一次，死会话直接断开（finally 里退订）。
+    session_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if authorization and authorization.startswith("Bearer ")
+        else ""
+    )
 
     queue = broadcaster.subscribe()
 
@@ -576,15 +625,22 @@ async def stream(request: Request, user: sqlite3.Row = Depends(current_user)):
         try:
             yield "event: ready\ndata: {}\n\n"
             while True:
+                if not session_alive(session_token):
+                    break
                 try:
                     payload = await asyncio.wait_for(
                         queue.get(), timeout=SSE_KEEPALIVE_SECONDS
                     )
-                    yield "event: message\ndata: " + json.dumps(
-                        payload, ensure_ascii=False
-                    ) + "\n\n"
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
+                    if await request.is_disconnected():
+                        break
+                    continue
+                if not session_alive(session_token):
+                    break
+                yield "event: message\ndata: " + json.dumps(
+                    payload, ensure_ascii=False
+                ) + "\n\n"
                 if await request.is_disconnected():
                     break
         finally:

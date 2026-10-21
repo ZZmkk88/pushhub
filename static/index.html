@@ -150,7 +150,7 @@
         <div class="sendGrid">
           <select id="sendApp"></select>
           <input id="sendTitle" placeholder="标题">
-          <input id="sendPri" type="number" min="0" max="10" value="5" title="优先级 0-10">
+          <input id="sendPri" type="number" step="1" value="5" title="优先级，整数，默认 5">
         </div>
         <div style="display:flex;gap:8px;">
           <input id="sendBody" placeholder="消息正文" style="flex:1;">
@@ -163,6 +163,7 @@
         <button class="btn ghost small" onclick="loadMessages()">刷新</button>
         <button class="btn danger small" onclick="clearMessages()">清空消息</button>
       </div>
+      <p style="font-size:12px;color:var(--ink2);margin:8px 0 0;">列表默认显示最近 200 条（单次最多 500 条）。</p>
       <div id="msgList"></div>
     </section>
   </main>
