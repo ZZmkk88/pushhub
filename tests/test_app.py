@@ -315,9 +315,10 @@ def test_change_password_flow(client):
 
 # ---------- P1-2 回归：SSE 会话令牌只认请求头 ----------
 
-def test_stream_query_token_rejected(client, token):
+def test_stream_query_token_rejected(client):
     """P1-2：即使带的是有效登录令牌，走查询参数也要 401。"""
-    r = client.get("/api/stream", params={"token": token})
+    fresh = login(client)  # 用新鲜会话，不用可能已被作废的模块级 fixture
+    r = client.get("/api/stream", params={"token": fresh})
     assert r.status_code == 401
 
 
@@ -393,3 +394,74 @@ def test_docs_endpoints_disabled(client):
     assert client.get("/docs").status_code == 404
     assert client.get("/redoc").status_code == 404
     assert client.get("/openapi.json").status_code == 404
+
+
+# ---------- TASK-037 P1-1 回归：作废的会话的 SSE 长连接断开且收不到消息 ----------
+
+def test_revoked_session_sse_stops(client):
+    """TASK-037 P1-1：改密作废旧会话后，它之前打开的 SSE 流不再收到新消息并断开。"""
+    import queue
+    import threading
+    import time as _time
+
+    admin_session = login(client)  # 用新鲜会话，不用可能已被作废的模块级 fixture
+    old_session = login(client)
+    got: "queue.Queue[str]" = queue.Queue()
+    stream_ended = threading.Event()
+
+    def reader():
+        try:
+            with client.stream("GET", "/api/stream", headers=auth(old_session)) as r:
+                assert r.status_code == 200
+                for line in r.iter_lines():
+                    got.put(line)
+        finally:
+            stream_ended.set()
+
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    start = _time.time()
+    ready = False
+    while _time.time() - start < 10:
+        try:
+            line = got.get(timeout=1)
+        except queue.Empty:
+            continue
+        if "ready" in line:
+            ready = True
+            break
+    assert ready, "旧会话的 SSE 流没建立起来"
+
+    # 用另一个会话改密，旧会话被作废
+    r = client.post(
+        "/api/change-password",
+        json={"current_password": "admin123", "new_password": "tmpnew88"},
+        headers=auth(admin_session),
+    )
+    assert r.status_code == 200
+    assert client.get("/api/me", headers=auth(old_session)).status_code == 401
+
+    # 发一条消息：旧流不许收到
+    a = make_app(client, admin_session, "SSE撤销应用")
+    client.post("/message", json={"message": "撤销后不许收到"},
+                headers={"X-App-Token": a["token"]})
+    _time.sleep(3)
+    leaked = False
+    while True:
+        try:
+            line = got.get_nowait()
+        except queue.Empty:
+            break
+        if "撤销后不许收到" in line:
+            leaked = True
+    assert not leaked, "被作废的 SSE 会话仍然收到了新消息"
+    # 旧流应该自己断开（生成器结束）
+    assert stream_ended.wait(timeout=15), "被作废会话的 SSE 流没有断开"
+
+    # 改回初始密码，恢复环境
+    r = client.post(
+        "/api/change-password",
+        json={"current_password": "tmpnew88", "new_password": "admin123"},
+        headers=auth(admin_session),
+    )
+    assert r.status_code == 200
