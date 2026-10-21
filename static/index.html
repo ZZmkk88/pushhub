@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pushhub · 推送中心</title>
+<style>
+  :root{
+    --ink:#1c2333; --ink2:#5b6478; --line:#e3e6ee; --bg:#f2f3f7;
+    --brand:#2b3a8f; --brand2:#4353c9; --accent:#f5a623;
+    --danger:#d9382b; --ok:#1f9d63; --card:#ffffff;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--ink);}
+  button{cursor:pointer; font:inherit;}
+  input,select,textarea{font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; width:100%;}
+  input:focus,select:focus,textarea:focus{outline:2px solid #b9c2f2; border-color:var(--brand2);}
+  .btn{background:var(--brand); color:#fff; border:none; border-radius:8px; padding:8px 16px;}
+  .btn:hover{background:var(--brand2);}
+  .btn.ghost{background:#fff; color:var(--ink); border:1px solid var(--line);}
+  .btn.ghost:hover{border-color:var(--brand2); color:var(--brand);}
+  .btn.small{padding:4px 10px; font-size:13px; border-radius:6px;}
+  .btn.danger{background:#fff; color:var(--danger); border:1px solid #f0c4c0;}
+  .btn.danger:hover{background:#fdf0ef;}
+  .hidden{display:none !important;}
+
+  /* 登录 */
+  #loginView{min-height:100vh; display:flex; align-items:center; justify-content:center; background:linear-gradient(150deg,#232c54,#2b3a8f 55%,#4353c9);}
+  .loginCard{background:#fff; border-radius:16px; padding:36px 34px; width:min(380px,92vw); box-shadow:0 18px 50px rgba(0,0,0,.35);}
+  .loginCard h1{font-size:26px; letter-spacing:.5px;}
+  .loginCard h1 span{color:var(--brand);}
+  .loginCard p{color:var(--ink2); font-size:13px; margin:6px 0 20px;}
+  .loginCard .row{margin-bottom:14px;}
+  .err{color:var(--danger); font-size:13px; min-height:18px; margin-bottom:8px;}
+
+  /* 主框架 */
+  header{position:sticky; top:0; z-index:5; background:#232c54; color:#fff; display:flex; align-items:center; gap:16px; padding:10px 20px;}
+  header .logo{font-size:20px; font-weight:700; letter-spacing:.5px;}
+  header .logo em{font-style:normal; color:var(--accent);}
+  .liveDot{display:flex; align-items:center; gap:6px; font-size:12px; color:#c9cfec;}
+  .liveDot i{width:9px; height:9px; border-radius:50%; background:#8a90a6; display:inline-block;}
+  .liveDot.on i{background:#2fe08a; box-shadow:0 0 8px #2fe08a;}
+  header .sp{flex:1;}
+  header .who{font-size:13px; color:#c9cfec;}
+  header button{background:transparent; border:1px solid #4a548a; color:#fff; border-radius:6px; padding:5px 12px; font-size:13px;}
+  header button:hover{border-color:var(--accent); color:var(--accent);}
+
+  main{display:grid; grid-template-columns:330px 1fr; gap:18px; padding:18px 20px; max-width:1440px; margin:0 auto; align-items:start;}
+  @media (max-width:900px){ main{grid-template-columns:1fr;} }
+  .panel{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px;}
+  .panel h2{font-size:15px; margin-bottom:12px; display:flex; align-items:center; gap:8px;}
+  .panel h2 .tag{font-size:11px; background:#eef0fb; color:var(--brand); border-radius:20px; padding:2px 8px; font-weight:600;}
+
+  /* 应用坞 */
+  .appItem{border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:10px; background:#fbfbfe;}
+  .appItem .nm{font-weight:700; font-size:14px;}
+  .appItem .ds{font-size:12px; color:var(--ink2); margin:2px 0 8px; word-break:break-all;}
+  .tokLine{display:flex; gap:6px; align-items:center; margin-bottom:8px;}
+  .tokLine code{flex:1; font-size:12px; background:#eef0f6; border-radius:6px; padding:6px 8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .appItem .ops{display:flex; flex-wrap:wrap; gap:6px;}
+  .appItem .meta{font-size:11px; color:#9aa1b5; margin-top:8px;}
+  .newApp{border-top:1px dashed var(--line); padding-top:12px; margin-top:4px;}
+  .newApp .row{margin-bottom:8px;}
+
+  /* 消息流 */
+  .toolbar{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;}
+  .toolbar select{width:auto; min-width:170px;}
+  .toolbar .sp{flex:1;}
+  .sendBox{border:1px solid #ffe1a8; background:#fffaf0; border-radius:12px; padding:12px; margin-bottom:16px;}
+  .sendBox h3{font-size:13px; margin-bottom:10px; color:#8a5b00;}
+  .sendGrid{display:grid; grid-template-columns:170px 1fr 110px; gap:8px; margin-bottom:8px;}
+  @media (max-width:700px){ .sendGrid{grid-template-columns:1fr;} }
+  .msg{position:relative; background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 14px 12px 18px; margin-bottom:10px; overflow:hidden;}
+  .msg::before{content:""; position:absolute; left:0; top:0; bottom:0; width:5px; background:#c8cede;}
+  .msg.p-high::before{background:var(--danger);}
+  .msg.p-mid::before{background:var(--accent);}
+  .msg.p-low::before{background:#c8cede;}
+  .msg.fresh{animation:flash 1.6s ease-out;}
+  @keyframes flash{0%{background:#fff3d6;}100%{background:#fff;}}
+  .msg .top{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+  .msg .ttl{font-weight:700; font-size:15px;}
+  .badge{font-size:11px; border-radius:20px; padding:2px 8px; font-weight:700;}
+  .badge.app{background:#eef0fb; color:var(--brand);}
+  .badge.hi{background:#fdeceb; color:var(--danger);}
+  .badge.md{background:#fff3d9; color:#8a5b00;}
+  .badge.lo{background:#eef0f3; color:var(--ink2);}
+  .msg .time{margin-left:auto; font-size:12px; color:#9aa1b5;}
+  .msg .body{margin-top:6px; font-size:14px; white-space:pre-wrap; word-break:break-word; color:#333a4d;}
+  .msg .del{position:absolute; right:10px; bottom:8px; background:none; border:none; color:#b6bccb; font-size:12px;}
+  .msg .del:hover{color:var(--danger);}
+  .empty{color:var(--ink2); text-align:center; padding:36px 0; font-size:14px;}
+
+  /* 弹窗 */
+  .mask{position:fixed; inset:0; background:rgba(20,24,40,.5); display:flex; align-items:center; justify-content:center; z-index:20;}
+  .dialog{background:#fff; border-radius:14px; padding:24px; width:min(400px,92vw);}
+  .dialog h3{margin-bottom:6px;}
+  .dialog p{font-size:13px; color:var(--ink2); margin-bottom:14px;}
+  .dialog .row{margin-bottom:10px;}
+  .dialog .ops{display:flex; gap:10px; justify-content:flex-end; margin-top:6px;}
+  .toast{position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:#232c54; color:#fff; padding:10px 18px; border-radius:24px; font-size:13px; z-index:30; box-shadow:0 8px 24px rgba(0,0,0,.3);}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="loginView">
+  <div class="loginCard">
+    <h1>push<span>hub</span></h1>
+    <p>自托管消息推送中心 · 登录后管理应用与消息</p>
+    <div class="err" id="loginErr"></div>
+    <div class="row"><input id="loginUser" placeholder="用户名" autocomplete="username"></div>
+    <div class="row"><input id="loginPass" type="password" placeholder="密码" autocomplete="current-password"></div>
+    <button class="btn" style="width:100%" onclick="doLogin()">登 录</button>
+    <p style="margin-top:14px;">默认账号 admin / admin123，首次登录会提示改密。</p>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="appView" class="hidden">
+  <header>
+    <div class="logo">push<em>hub</em></div>
+    <div class="liveDot" id="liveDot"><i></i><span id="liveTxt">实时通道连接中…</span></div>
+    <div class="sp"></div>
+    <div class="who" id="whoTxt"></div>
+    <button onclick="openPw()">修改密码</button>
+    <button onclick="doLogout()">退出</button>
+  </header>
+
+  <main>
+    <!-- 左：应用坞 -->
+    <section class="panel">
+      <h2>📦 应用坞 <span class="tag" id="appCount"></span></h2>
+      <div id="appList"></div>
+      <div class="newApp">
+        <div class="row"><input id="newAppName" placeholder="新应用名称，如：备份脚本"></div>
+        <div class="row"><input id="newAppDesc" placeholder="备注（可选）"></div>
+        <button class="btn" style="width:100%" onclick="createApp()">＋ 新建应用并生成令牌</button>
+      </div>
+      <p style="font-size:12px;color:var(--ink2);margin-top:12px;line-height:1.7;">
+        程序发消息：POST /message，请求头带 <code>X-App-Token: 令牌</code>，
+        内容 JSON：{"title":"标题","message":"正文","priority":5}
+      </p>
+    </section>
+
+    <!-- 右：消息流 -->
+    <section class="panel">
+      <h2>📨 消息流 <span class="tag" id="msgCount"></span></h2>
+      <div class="sendBox">
+        <h3>✉️ 发一条测试消息（用所选应用的令牌走真实接口）</h3>
+        <div class="sendGrid">
+          <select id="sendApp"></select>
+          <input id="sendTitle" placeholder="标题">
+          <input id="sendPri" type="number" min="0" max="10" value="5" title="优先级 0-10">
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input id="sendBody" placeholder="消息正文" style="flex:1;">
+          <button class="btn" onclick="sendTest()">发送</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <select id="filterApp" onchange="loadMessages()"><option value="">全部应用</option></select>
+        <div class="sp"></div>
+        <button class="btn ghost small" onclick="loadMessages()">刷新</button>
+        <button class="btn danger small" onclick="clearMessages()">清空消息</button>
+      </div>
+      <div id="msgList"></div>
+    </section>
+  </main>
+</div>
+
+<!-- 改密弹窗 -->
+<div id="pwMask" class="mask hidden">
+  <div class="dialog">
+    <h3>修改密码</h3>
+    <p id="pwHint">为了账号安全，请设置一个新密码（至少 6 位）。</p>
+    <div class="err" id="pwErr"></div>
+    <div class="row"><input id="pwCur" type="password" placeholder="当前密码"></div>
+    <div class="row"><input id="pwNew" type="password" placeholder="新密码"></div>
+    <div class="ops">
+      <button class="btn ghost" onclick="closePw()">稍后再说</button>
+      <button class="btn" onclick="doChangePw()">保存新密码</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let TOKEN = localStorage.getItem("ph_token") || "";
+let APPS = [];
+let shownTok = {};   // appId -> 是否明文显示令牌
+let esAbort = null;  // SSE 连接中断控制器
+
+function toast(msg){
+  $("toast").textContent = msg;
+  $("toast").classList.remove("hidden");
+  setTimeout(()=>$("toast").classList.add("hidden"), 2200);
+}
+async function api(path, opts={}){
+  const r = await fetch(path, {...opts, headers:{"Content-Type":"application/json","Authorization":"Bearer "+TOKEN, ...(opts.headers||{})}});
+  if(r.status === 401 && !path.includes("/api/login")){ showLogin(); throw new Error("登录已过期"); }
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.detail || ("请求失败 "+r.status));
+  return data;
+}
+function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmtTime(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  const p = n => String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function priBadge(p){
+  if(p >= 8) return `<span class="badge hi">紧急 · ${p}</span>`;
+  if(p >= 5) return `<span class="badge md">普通 · ${p}</span>`;
+  return `<span class="badge lo">低 · ${p}</span>`;
+}
+function priClass(p){ return p >= 8 ? "p-high" : (p >= 5 ? "p-mid" : "p-low"); }
+
+/* ---------- 登录 ---------- */
+function showLogin(){
+  TOKEN = ""; localStorage.removeItem("ph_token");
+  stopStream();
+  $("appView").classList.add("hidden");
+  $("loginView").classList.remove("hidden");
+}
+async function doLogin(){
+  $("loginErr").textContent = "";
+  try{
+    const r = await fetch("/api/login", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username:$("loginUser").value.trim(), password:$("loginPass").value})});
+    const data = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.detail || "登录失败");
+    TOKEN = data.token; localStorage.setItem("ph_token", TOKEN);
+    enterApp(data.username, data.must_change_password);
+  }catch(e){ $("loginErr").textContent = e.message; }
+}
+function enterApp(username, mustChange){
+  $("loginView").classList.add("hidden");
+  $("appView").classList.remove("hidden");
+  $("whoTxt").textContent = "👤 " + username;
+  loadApps().then(loadMessages);
+  startStream();
+  if(mustChange) openPw(true);
+}
+async function doLogout(){
+  try{ await api("/api/logout", {method:"POST"}); }catch(e){}
+  showLogin();
+}
+
+/* ---------- 改密 ---------- */
+function openPw(first=false){
+  $("pwErr").textContent = "";
+  $("pwCur").value = ""; $("pwNew").value = "";
+  $("pwHint").textContent = first ? "这是首次登录，为了账号安全请改掉默认密码（至少 6 位）。也可以先跳过。" : "设置一个新密码（至少 6 位）。";
+  $("pwMask").classList.remove("hidden");
+}
+function closePw(){ $("pwMask").classList.add("hidden"); }
+async function doChangePw(){
+  $("pwErr").textContent = "";
+  try{
+    await api("/api/change-password", {method:"POST", body: JSON.stringify({current_password:$("pwCur").value, new_password:$("pwNew").value})});
+    closePw(); toast("密码已更新");
+  }catch(e){ $("pwErr").textContent = e.message; }
+}
+
+/* ---------- 应用 ---------- */
+async function loadApps(){
+  APPS = await api("/api/apps");
+  $("appCount").textContent = APPS.length + " 个应用";
+  const sel = $("filterApp"), send = $("sendApp");
+  const curF = sel.value, curS = send.value;
+  sel.innerHTML = '<option value="">全部应用</option>' + APPS.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  send.innerHTML = APPS.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  if(curF) sel.value = curF;
+  if(curS) send.value = curS;
+  $("appList").innerHTML = APPS.length ? APPS.map(a => {
+    const tok = a.token ? (shownTok[a.id] ? a.token : a.token.slice(0,10) + "••••••••") : "（已吊销）";
+    return `<div class="appItem">
+      <div class="nm">${esc(a.name)}</div>
+      <div class="ds">${esc(a.description || "")}</div>
+      <div class="tokLine"><code title="${esc(a.token || "")}">${esc(tok)}</code>
+        <button class="btn ghost small" onclick="toggleTok(${a.id})">${shownTok[a.id] ? "隐藏" : "显示"}</button>
+        <button class="btn ghost small" onclick="copyTok(${a.id})">复制</button>
+      </div>
+      <div class="ops">
+        <button class="btn ghost small" onclick="renameApp(${a.id})">改名</button>
+        <button class="btn ghost small" onclick="regenTok(${a.id})">重新生成令牌</button>
+        ${a.token ? `<button class="btn ghost small" onclick="revokeTok(${a.id})">吊销令牌</button>` : ""}
+        <button class="btn danger small" onclick="delApp(${a.id})">删除应用</button>
+      </div>
+      <div class="meta">建于 ${fmtTime(a.created_at)}${a.last_used_at ? " · 最近发消息 " + fmtTime(a.last_used_at) : " · 还没发过消息"}</div>
+    </div>`;
+  }).join("") : '<div class="empty">还没有应用，先在下面新建一个</div>';
+}
+function toggleTok(id){ shownTok[id] = !shownTok[id]; loadApps(); }
+function copyTok(id){
+  const a = APPS.find(x=>x.id===id);
+  if(a && a.token){ navigator.clipboard.writeText(a.token).then(()=>toast("令牌已复制")); }
+}
+async function createApp(){
+  const name = $("newAppName").value.trim();
+  if(!name){ toast("先填应用名"); return; }
+  try{
+    await api("/api/apps", {method:"POST", body: JSON.stringify({name, description:$("newAppDesc").value.trim()})});
+    $("newAppName").value = ""; $("newAppDesc").value = "";
+    toast("应用已创建，令牌已生成");
+    loadApps();
+  }catch(e){ toast(e.message); }
+}
+async function renameApp(id){
+  const a = APPS.find(x=>x.id===id);
+  const name = prompt("新的应用名称：", a ? a.name : "");
+  if(!name || !name.trim()) return;
+  const desc = prompt("备注（可留空）：", a ? a.description : "") ?? "";
+  try{ await api("/api/apps/"+id, {method:"PUT", body: JSON.stringify({name:name.trim(), description:desc.trim()})}); loadApps().then(loadMessages); }
+  catch(e){ toast(e.message); }
+}
+async function regenTok(id){
+  if(!confirm("重新生成后，旧令牌立即失效。用旧令牌的程序要换上新令牌才能继续发消息。确定？")) return;
+  try{ await api(`/api/apps/${id}/regenerate-token`, {method:"POST"}); toast("新令牌已生成"); loadApps(); }
+  catch(e){ toast(e.message); }
+}
+async function revokeTok(id){
+  if(!confirm("吊销后，这个应用的令牌立刻不能再发消息。确定？")) return;
+  try{ await api(`/api/apps/${id}/token`, {method:"DELETE"}); toast("令牌已吊销"); loadApps(); }
+  catch(e){ toast(e.message); }
+}
+async function delApp(id){
+  if(!confirm("删除应用会连同它的全部消息一起删除，不可恢复。确定？")) return;
+  try{ await api("/api/apps/"+id, {method:"DELETE"}); toast("应用已删除"); loadApps().then(loadMessages); }
+  catch(e){ toast(e.message); }
+}
+
+/* ---------- 消息 ---------- */
+function msgHtml(m, fresh=false){
+  return `<div class="msg ${priClass(m.priority)} ${fresh ? "fresh" : ""}" id="msg-${m.id}">
+    <div class="top">
+      <span class="ttl">${esc(m.title || "(无标题)")}</span>
+      ${priBadge(m.priority)}
+      <span class="badge app">${esc(m.app_name)}</span>
+      <span class="time">${fmtTime(m.created_at)}</span>
+    </div>
+    <div class="body">${esc(m.message)}</div>
+    <button class="del" onclick="delMsg(${m.id})">删除</button>
+  </div>`;
+}
+async function loadMessages(){
+  const f = $("filterApp").value;
+  const list = await api("/api/messages" + (f ? "?app_id="+f : ""));
+  $("msgCount").textContent = list.length + " 条";
+  $("msgList").innerHTML = list.length ? list.map(m=>msgHtml(m)).join("") : '<div class="empty">暂时没有消息。用左边的应用令牌发一条试试👇</div>';
+}
+async function delMsg(id){
+  try{ await api("/api/messages/"+id, {method:"DELETE"}); const el = $("msg-"+id); if(el) el.remove(); }
+  catch(e){ toast(e.message); }
+}
+async function clearMessages(){
+  const f = $("filterApp").value;
+  const scope = f ? "当前应用" : "全部应用";
+  if(!confirm(`确定清空${scope}的消息？不可恢复。`)) return;
+  try{
+    const r = await api("/api/messages" + (f ? "?app_id="+f : ""), {method:"DELETE"});
+    toast(`已清空 ${r.deleted} 条`); loadMessages();
+  }catch(e){ toast(e.message); }
+}
+async function sendTest(){
+  const appId = Number($("sendApp").value);
+  const a = APPS.find(x=>x.id===appId);
+  if(!a){ toast("先新建一个应用"); return; }
+  if(!a.token){ toast("这个应用的令牌已吊销，先重新生成"); return; }
+  const body = $("sendBody").value.trim();
+  if(!body){ toast("正文不能为空"); return; }
+  try{
+    const r = await fetch("/message", {method:"POST",
+      headers:{"Content-Type":"application/json","X-App-Token":a.token},
+      body: JSON.stringify({title:$("sendTitle").value.trim(), message:body, priority:Number($("sendPri").value || 5)})});
+    const data = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.detail || "发送失败");
+    $("sendBody").value = ""; $("sendTitle").value = "";
+    toast("已发送");
+    // SSE 开着时新消息会自动冒出来；通道没连上时手动刷新兜底
+    if(!$("liveDot").classList.contains("on")) loadMessages();
+  }catch(e){ toast(e.message); }
+}
+
+/* ---------- SSE 实时通道（fetch 流式读取，带 Authorization 头） ---------- */
+function setLive(on, txt){
+  $("liveDot").classList.toggle("on", on);
+  $("liveTxt").textContent = txt;
+}
+function stopStream(){ if(esAbort){ esAbort.abort(); esAbort = null; } }
+async function startStream(){
+  stopStream();
+  esAbort = new AbortController();
+  let retry = 0;
+  while(esAbort && !esAbort.signal.aborted){
+    try{
+      const r = await fetch("/api/stream", {headers:{"Authorization":"Bearer "+TOKEN}, signal:esAbort.signal});
+      if(!r.ok || !r.body) throw new Error("stream "+r.status);
+      setLive(true, "实时通道已连接");
+      retry = 0;
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while(true){
+        const {done, value} = await reader.read();
+        if(done) break;
+        buf += dec.decode(value, {stream:true});
+        let idx;
+        while((idx = buf.indexOf("\n\n")) >= 0){
+          const raw = buf.slice(0, idx); buf = buf.slice(idx+2);
+          handleEvent(raw);
+        }
+      }
+    }catch(e){
+      if(esAbort.signal.aborted) return;
+    }
+    setLive(false, "实时通道断开，重连中…");
+    retry++;
+    await new Promise(res => setTimeout(res, Math.min(1000 * retry, 5000)));
+  }
+}
+function handleEvent(raw){
+  const lines = raw.split("\n");
+  let ev = "message", data = "";
+  for(const ln of lines){
+    if(ln.startsWith("event:")) ev = ln.slice(6).trim();
+    else if(ln.startsWith("data:")) data += ln.slice(5).trim();
+  }
+  if(ev !== "message" || !data) return;
+  let m; try{ m = JSON.parse(data); }catch(e){ return; }
+  const f = $("filterApp").value;
+  if(f && Number(f) !== m.app_id) return;
+  const list = $("msgList");
+  const empty = list.querySelector(".empty"); if(empty) empty.remove();
+  list.insertAdjacentHTML("afterbegin", msgHtml(m, true));
+  loadAppsCountOnly();
+}
+async function loadAppsCountOnly(){
+  // 新消息到达后刷新一下消息计数
+  const f = $("filterApp").value;
+  const list = await api("/api/messages" + (f ? "?app_id="+f : "")).catch(()=>null);
+  if(list) $("msgCount").textContent = list.length + " 条";
+}
+
+/* ---------- 启动 ---------- */
+(async function boot(){
+  if(!TOKEN) return;
+  try{
+    const me = await api("/api/me");
+    enterApp(me.username, me.must_change_password);
+  }catch(e){ showLogin(); }
+})();
+$("loginPass").addEventListener("keydown", e => { if(e.key === "Enter") doLogin(); });
+</script>
+</body>
+</html>
